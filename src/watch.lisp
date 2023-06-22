@@ -1,7 +1,8 @@
 (defpackage :watch
   (:use :common-lisp)
   (:export
-   #:watch!))
+   #:watch
+   #:onchange))
 
 (in-package :watch)
 
@@ -10,6 +11,8 @@
 (defparameter *instance* nil)
 (defparameter *watch-descriptors* nil
   "Assoc list. ((wd . (var path callback)) ...)")
+(defparameter *onchange-descriptors* nil
+  "Assoc list: ((wd . (path callback)) ...)")
 
 (defun init-watch ()
   (when (not *instance*)
@@ -62,6 +65,15 @@
   (setf *instance* nil)
   (setf *watch-descriptors* nil))
 
+(defun add-onchange-watch (pathname event-flags callback)
+  (init-watch)
+  (setf *onchange-descriptors*
+        (acons
+         (let ((descriptor (inotify-add-watch *instance* pathname event-flags)))
+           (if (= descriptor -1)
+               (error "Invalid file or incorrect flags.")
+               descriptor))
+         (list pathname callback) *watch-descriptors*)))
 
 (defun add-watch (var pathname event-flags &optional callback)
   (unless (find-if (lambda (x) (eq var (cadr x))) *watch-descriptors*)
@@ -88,12 +100,15 @@
                        (setf (symbol-value (cadr found-list)) (uiop:read-file-string (caddr found-list)))
                        (when (fourth found-list)
                          (print found-list)
-                         (funcall (fourth found-list))))))))))))
+                         (funcall (fourth found-list)))))
+                    (let ((found-list (assoc wd *onchange-descriptors*)))
+                      (when found-list
+                        (funcall (third found-list)))))))))))
 
 (defun handle-events ()
   (loop while t do (handle-next-event)))
 
-(defmacro watch! (&rest triplets)
+(defmacro watch (&rest triplets)
   "Loads the file into a string bound to the global
    variable var and reloads it whenever the file changes."
   (when triplets
@@ -102,8 +117,15 @@
       `(progn
          (add-watch ',(caar triplets) ,path '(:in-modify) ,callback)
          (defparameter ,(caar triplets) (uiop:read-file-string ,path))
-         ,(print (caar triplets))
-         (watch! ,@(cdr triplets))))))
+         (watch ,@(cdr triplets))))))
+
+(defmacro on-change (&rest pairs)
+  (when pairs
+    (let ((path (first pairs))
+          (callback (second pairs)))
+      `(progn
+         (add-onchange-watch ,path '(:in-modify) ,callback)
+         (on-change ,@(cddr pairs))))))
 
 (defun start-watcher ()
   (sb-thread:make-thread #'handle-events :name "file watcher"))
